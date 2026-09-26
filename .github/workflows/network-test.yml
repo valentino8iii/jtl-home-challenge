@@ -29,8 +29,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y iperf3 jq
 
-      - name: Test VPS 1 Ingress
-        id: test_vps1
+      - name: Test VPS 1
         run: |
           echo "Testing VPS 1: ${{ github.event.inputs.vps1_ip }}..."
           iperf3 -c "${{ github.event.inputs.vps1_ip }}" -p 5201 \
@@ -43,8 +42,7 @@ jobs:
           echo "Waiting 10s for TCP connections to tear down..."
           sleep 10
 
-      - name: Test VPS 2 Ingress
-        id: test_vps2
+      - name: Test VPS 2
         run: |
           echo "Testing VPS 2: ${{ github.event.inputs.vps2_ip }}..."
           iperf3 -c "${{ github.event.inputs.vps2_ip }}" -p 5201 \
@@ -78,14 +76,18 @@ jobs:
           vps2_speed=$(parse_speed vps2_results.json)
           vps2_retr=$(parse_retr vps2_results.json)
 
-          cat << EOF >> $GITHUB_STEP_SUMMARY
+          cat << 'EOF' >> $GITHUB_STEP_SUMMARY
           ## 🌐 Vietnam VPS Ingress Benchmark
 
-          | Metric | VPS 1 (\`160.250.26.86\`) | VPS 2 (\`103.144.87.132\`) |
+          | Metric | VPS 1 (`${{ github.event.inputs.vps1_ip }}`) | VPS 2 (`${{ github.event.inputs.vps2_ip }}`) |
           | :--- | :--- | :--- |
-          | **Ingress Bandwidth** | **$vps1_speed** \vert{} **$vps2_speed** |
-          | **TCP Retransmits** | $vps1_retr \vert{}$vps2_retr |
-          | **Streams / Duration** | 8 streams / 30s | 8 streams / 30s |
+          EOF
 
-          > **Conclusion:** VPS 1 delivers ~30x the international ingress capacity of VPS 2.
+          echo "| **Ingress Bandwidth** | **$vps1_speed** \vert{} **$vps2_speed** |" >> $GITHUB_STEP_SUMMARY
+          echo "| **TCP Retransmits** | $vps1_retr | $vps2_retr \vert{}" >> $GITHUB_STEP_SUMMARY
+          echo "| **Streams / Duration** | ${{ github.event.inputs.streams }} streams / ${{ github.event.inputs.duration }}s \vert{}${{ github.event.inputs.streams }} streams / ${{ github.event.inputs.duration }}s \vert{}" >> $GITHUB_STEP_SUMMARY
+
+          cat << 'EOF' >> $GITHUB_STEP_SUMMARY
+
+          > **Analysis:** VPS 1 has direct unthrottled international transit, whereas VPS 2 is limited by an international bandwidth cap.
           EOF
