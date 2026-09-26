@@ -1,0 +1,87 @@
+name: Benchmark Dual VN VPS Ingress
+
+on:
+  workflow_dispatch:
+    inputs:
+      vps1_ip:
+        description: 'First VN VPS IP'
+        required: true
+        default: '203.0.113.10'
+      vps2_ip:
+        description: 'Second VN VPS IP'
+        required: true
+        default: '203.0.113.20'
+      streams:
+        description: 'Parallel TCP Streams (-P)'
+        required: true
+        default: '8'
+      duration:
+        description: 'Test Duration in seconds (-t)'
+        required: true
+        default: '30'
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install Tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y iperf3 jq
+
+      - name: Test VPS 1 Ingress
+        id: test_vps1
+        run: |
+          echo "Testing VPS 1: ${{ github.event.inputs.vps1_ip }}..."
+          iperf3 -c "${{ github.event.inputs.vps1_ip }}" -p 5201 \
+                 -P "${{ github.event.inputs.streams }}" \
+                 -t "${{ github.event.inputs.duration }}" \
+                 -J > vps1_results.json || true
+
+      - name: Buffer Cooldown
+        run: |
+          echo "Waiting 10s for TCP connections to tear down..."
+          sleep 10
+
+      - name: Test VPS 2 Ingress
+        id: test_vps2
+        run: |
+          echo "Testing VPS 2: ${{ github.event.inputs.vps2_ip }}..."
+          iperf3 -c "${{ github.event.inputs.vps2_ip }}" -p 5201 \
+                 -P "${{ github.event.inputs.streams }}" \
+                 -t "${{ github.event.inputs.duration }}" \
+                 -J > vps2_results.json || true
+
+      - name: Generate Comparison Summary
+        run: |
+          parse_iperf() {
+            local file="$1"
+            if [ ! -s "$file" ] \vert{}\vert{} jq -e '.error' "$file" >/dev/null 2>&1; then
+              echo "Error/Timeout|N/A|N/A"
+              return
+            fi
+            
+            local bps=$(jq -r '.end.sum_received.bits_per_second // 0' "$file")
+            local mbps=$(awk "BEGIN {printf \"\%.2f\", $bps / 1000000}")
+            local retr=$(jq -r '.end.sum_sent.retransmits // 0' "$file")
+            local rtt_ms=$(jq -r '[(.end.streams[].sender.mean_rtt // 0)] \vert{} add / length / 1000 \vert{} round' "$file" 2>/dev/null || echo "N/A")
+            
+            echo "${mbps} Mbps|${retr}\vert{}${rtt_ms} ms"
+          }
+
+          IFS='|' read -r vps1_speed vps1_retr vps1_rtt <<< "$(parse_iperf vps1_results.json)"
+          IFS='|' read -r vps2_speed vps2_retr vps2_rtt <<< "$(parse_iperf vps2_results.json)"
+
+          # Write table to GitHub Actions Step Summary
+          cat << EOF >> $GITHUB_STEP_SUMMARY
+          ## 🌐 Europe to Vietnam Ingress Benchmark
+
+          | Metric | VPS 1 (\`${{ github.event.inputs.vps1_ip }}\`) | VPS 2 (\`${{ github.event.inputs.vps2_ip }}\`) |
+          | :--- | :--- | :--- |
+          | **Ingress Bandwidth** | **$vps1_speed** \vert{} **$vps2_speed** |
+          | **TCP Retransmits** | $vps1_retr \vert{}$vps2_retr |
+          | **Est. Mean RTT** | $vps1_rtt \vert{}$vps2_rtt |
+          | **Streams / Duration** | ${{ github.event.inputs.streams }} streams / ${{ github.event.inputs.duration }}s | ${{ github.event.inputs.streams }} streams / ${{ github.event.inputs.duration }}s |
+
+          > **Analysis Tip:** Higher throughput with fewer TCP retransmits points to cleaner international peering routes and lower packet drop rates along landing station cross-connects.
+          EOF

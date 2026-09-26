@@ -15,3 +15,5 @@ dist/
 bin/
 obj/
 *.user
+
+.agents
