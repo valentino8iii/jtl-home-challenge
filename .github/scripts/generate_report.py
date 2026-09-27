@@ -196,6 +196,22 @@ def main():
         else:
             retr_comp = "Normal TCP flow control"
 
+    is_domestic_vn = "vietnam" in routing_mode.lower() or "vietnam" in runner_origin.lower() or "vn" in runner_origin.lower()
+    if is_domestic_vn:
+        takeaway_v1 = f"**VPS 1 (`{vps1_ip}`)**: Domestic Vietnam ingress delivering **{v1['speed_str']}** with ~{v1['rtt_str']} latency over domestic peering."
+        takeaway_v2 = f"**VPS 2 (`{vps2_ip}`)**: Domestic Vietnam ingress delivering **{v2['speed_str']}** with ~{v2['rtt_str']} latency."
+        if v1['raw_bps'] > v2['raw_bps'] * 1.15:
+            takeaway_summary = f"VPS 1 provides **~{v1['raw_bps']/max(v2['raw_bps'], 1.0):.1f}x higher domestic throughput**."
+        elif v2['raw_bps'] > v1['raw_bps'] * 1.15:
+            takeaway_summary = f"VPS 2 provides **~{v2['raw_bps']/max(v1['raw_bps'], 1.0):.1f}x higher domestic throughput**."
+        else:
+            takeaway_summary = "Both VPS providers offer comparable domestic bandwidth within Vietnam."
+        takeaway_block = f"> - {takeaway_v1}\n> - {takeaway_v2}\n> - 💡 **Domestic Route Assessment:** {takeaway_summary}"
+    else:
+        takeaway_v1 = f"**VPS 1 (`{vps1_ip}`)**: Direct unthrottled international transit delivering **{v1['speed_str']}**. High packet retransmission count ({v1['retr_str']}) is normal behavior when saturating a connection over a high-latency trans-oceanic route (~{v1['rtt_str']} RTT) due to TCP window scaling."
+        takeaway_v2 = f"**VPS 2 (`{vps2_ip}`)**: International ingress is strictly **capped / throttled at ~{v2['speed_str']}**, despite physical fiber latency being comparable (~{v2['rtt_str']}). VPS 1 provides **~{v1['raw_bps']/max(v2['raw_bps'], 1.0):.1f}x higher international throughput**."
+        takeaway_block = f"> - {takeaway_v1}\n> - {takeaway_v2}"
+
     report = f"""## 🌐 Vietnam VPS Ingress Benchmark
 
 **Client Ingress Origin (Runner):** {runner_origin}  
@@ -212,8 +228,7 @@ def main():
 | **Streams / Duration** | {streams} streams / {duration}s | {streams} streams / {duration}s | Identical test load |
 
 > 📌 **Key Takeaway & Route Analysis:**
-> - **VPS 1 (`{vps1_ip}`)**: Direct unthrottled international transit delivering **{v1['speed_str']}**. High packet retransmission count ({v1['retr_str']}) is normal behavior when saturating a high-throughput connection over a high-latency trans-oceanic route (~{v1['rtt_str']} RTT) due to TCP window scaling and aggressive congestion control.
-> - **VPS 2 (`{vps2_ip}`)**: International ingress is strictly **capped / throttled at ~{v2['speed_str']}**, despite physical fiber latency being comparable (~{v2['rtt_str']}). VPS 1 provides **~{v1['raw_bps']/max(v2['raw_bps'], 1.0):.1f}x higher international throughput**.
+{takeaway_block}
 
 <details>
 <summary>🔍 Raw Summary (JSON)</summary>

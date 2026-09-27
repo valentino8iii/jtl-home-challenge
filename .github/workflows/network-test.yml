@@ -21,6 +21,7 @@ on:
           - 'WireGuard VPN (Asia - requires WG_ASIA_CONF secret)'
           - 'WireGuard VPN (Europe - requires WG_EUROPE_CONF secret)'
           - 'WireGuard VPN (US - requires WG_US_CONF secret)'
+          - 'WireGuard VPN (Vietnam - requires WG_VN_CONF secret)'
         default: 'Cloudflare WARP (Global Anycast)'
       port:
         description: 'iperf3 Server Port (-p)'
@@ -71,6 +72,7 @@ jobs:
       - name: Setup WireGuard VPN
         if: ${{ startsWith(github.event.inputs.routing_mode, 'WireGuard') }}
         env:
+          WG_VN_CONF: ${{ secrets.WG_VN_CONF }}
           WG_ASIA_CONF: ${{ secrets.WG_ASIA_CONF }}
           WG_EUROPE_CONF: ${{ secrets.WG_EUROPE_CONF }}
           WG_US_CONF: ${{ secrets.WG_US_CONF }}
@@ -78,7 +80,9 @@ jobs:
         run: |
           sudo apt-get install -y wireguard wireguard-tools
           CONF=""
-          if [[ "$MODE" == *"Asia"* ]] && [[ -n "$WG_ASIA_CONF" ]]; then
+          if [[ "$MODE" == *"Vietnam"* ]] && [[ -n "$WG_VN_CONF" ]]; then
+            CONF="$WG_VN_CONF"
+          elif [[ "$MODE" == *"Asia"* ]] && [[ -n "$WG_ASIA_CONF" ]]; then
             CONF="$WG_ASIA_CONF"
           elif [[ "$MODE" == *"Europe"* ]] && [[ -n "$WG_EUROPE_CONF" ]]; then
             CONF="$WG_EUROPE_CONF"
