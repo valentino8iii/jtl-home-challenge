@@ -44,19 +44,38 @@ def main():
         except Exception:
             pass
 
+    wg_peer = None
+    if os.path.exists("wg_status.txt") and os.path.getsize("wg_status.txt") > 0:
+        try:
+            with open("wg_status.txt", "r", encoding="utf-8") as f:
+                for line in f:
+                    if "endpoint:" in line:
+                        wg_peer = line.split("endpoint:", 1)[1].strip()
+                        break
+        except Exception:
+            pass
+
     if not warp_active and os.path.exists("runner_info.json") and os.path.getsize("runner_info.json") > 0:
         try:
             with open("runner_info.json", "r", encoding="utf-8") as f:
                 r_data = json.load(f)
-                ip = r_data.get("ip", "Unknown")
+                ip = r_data.get("ip") or r_data.get("query")
                 city = r_data.get("city", "")
-                region = r_data.get("region", "")
+                region = r_data.get("region") or r_data.get("regionName", "")
                 country = r_data.get("country", "")
-                org = r_data.get("org", "")
+                org = r_data.get("org") or r_data.get("isp", "")
                 geo = ", ".join(filter(None, [city, region, country]))
-                runner_origin = f"`{ip}` ({geo} — {org})" if geo else f"`{ip}` ({org})"
+                if ip and ip != "Unknown":
+                    extra = f"{geo} — {org}" if geo and org else (geo or org)
+                    runner_origin = f"`{ip}` ({extra})" if extra else f"`{ip}`"
         except Exception:
             pass
+
+    if wg_peer:
+        if runner_origin == "GitHub Hosted Runner (Ubuntu)":
+            runner_origin = f"WireGuard VPN (Peer: `{wg_peer}`)"
+        else:
+            runner_origin = f"{runner_origin} [via WireGuard Peer `{wg_peer}`]"
 
     def parse_iperf(json_path, log_path):
         res = {

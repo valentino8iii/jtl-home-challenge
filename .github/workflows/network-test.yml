@@ -91,6 +91,9 @@ jobs:
             sudo chmod 600 /etc/wireguard/wg0.conf
             sudo wg-quick up wg0
             echo "WireGuard tunnel is UP!"
+            echo "=== WireGuard Interface Status ==="
+            sudo wg show
+            sudo wg show > wg_status.txt 2>&1 || true
           else
             echo "::warning::Selected $MODE, but the corresponding GitHub Secret (WG_*_CONF) is not configured. Falling back to direct connection."
           fi
@@ -98,7 +101,29 @@ jobs:
       - name: Inspect Runner Origin
         run: |
           echo "Detecting runner public IP and egress location..."
-          curl -s --max-time 5 https://ipinfo.io/json > runner_info.json || echo "{}" > runner_info.json
+          echo "{}" > runner_info.json
+          for url in \
+            "http://ip-api.com/json" \
+            "https://ipinfo.io/json" \
+            "https://ifconfig.co/json"
+          do
+            echo "Checking egress info via $url..."
+            if curl -s --connect-timeout 4 --max-time 8 "$url" > temp_info.json && grep -q -E '"ip"|"query"' temp_info.json; then
+              cp temp_info.json runner_info.json
+              echo "Egress location detected successfully:"
+              cat runner_info.json
+              echo ""
+              break
+            fi
+          done
+          if ! grep -q -E '"ip"|"query"' runner_info.json; then
+            echo "JSON Geo APIs timed out or rate-limited. Trying plaintext IP services..."
+            RAW_IP=$(curl -s --connect-timeout 3 --max-time 5 https://icanhazip.com || curl -s --connect-timeout 3 --max-time 5 https://ifconfig.me || echo "")
+            if [ -n "$RAW_IP" ]; then
+              echo "{\"ip\": \"$RAW_IP\"}" > runner_info.json
+              echo "Public IP detected: $RAW_IP"
+            fi
+          fi
 
       - name: Test VPS 1
         run: |
@@ -147,4 +172,5 @@ jobs:
             vps2_stderr.log
             runner_info.json
             warp_trace.txt
+            wg_status.txt
           if-no-files-found: ignore
