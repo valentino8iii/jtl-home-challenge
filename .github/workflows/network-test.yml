@@ -11,6 +11,17 @@ on:
         description: 'Second VN VPS IP'
         required: true
         default: '103.144.87.132'
+      routing_mode:
+        description: 'Ingress Routing / VPN Mode'
+        required: true
+        type: choice
+        options:
+          - 'Cloudflare WARP (Global Anycast)'
+          - 'Direct (GitHub Runner / Azure)'
+          - 'WireGuard VPN (Asia - requires WG_ASIA_CONF secret)'
+          - 'WireGuard VPN (Europe - requires WG_EUROPE_CONF secret)'
+          - 'WireGuard VPN (US - requires WG_US_CONF secret)'
+        default: 'Cloudflare WARP (Global Anycast)'
       port:
         description: 'iperf3 Server Port (-p)'
         required: false
@@ -36,18 +47,66 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y iperf3 jq
 
+      - name: Setup Cloudflare WARP
+        if: ${{ startsWith(github.event.inputs.routing_mode, 'Cloudflare WARP') }}
+        run: |
+          echo "Installing Cloudflare WARP client..."
+          curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | sudo gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
+          echo "deb [arch=amd64 signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/cloudflare-warp.list
+          sudo apt-get update -o Dir::Etc::sourcelist="sources.list.d/cloudflare-warp.list" -o Dir::Etc::sourceparts="-" -o APT::Get::List-Cleanup="0"
+          sudo apt-get install -y cloudflare-warp
+          echo "Starting warp-svc..."
+          sudo systemctl start warp-svc || true
+          sleep 2
+          echo "Registering WARP client..."
+          warp-cli --accept-tos registration new || true
+          warp-cli --accept-tos mode warp || true
+          warp-cli --accept-tos connect || true
+          sleep 4
+          warp-cli status || true
+          echo "Fetching Cloudflare trace..."
+          curl -s --max-time 5 https://www.cloudflare.com/cdn-cgi/trace > warp_trace.txt || true
+          cat warp_trace.txt
+
+      - name: Setup WireGuard VPN
+        if: ${{ startsWith(github.event.inputs.routing_mode, 'WireGuard') }}
+        env:
+          WG_ASIA_CONF: ${{ secrets.WG_ASIA_CONF }}
+          WG_EUROPE_CONF: ${{ secrets.WG_EUROPE_CONF }}
+          WG_US_CONF: ${{ secrets.WG_US_CONF }}
+          MODE: ${{ github.event.inputs.routing_mode }}
+        run: |
+          sudo apt-get install -y wireguard wireguard-tools
+          CONF=""
+          if [[ "$MODE" == *"Asia"* ]] && [[ -n "$WG_ASIA_CONF" ]]; then
+            CONF="$WG_ASIA_CONF"
+          elif [[ "$MODE" == *"Europe"* ]] && [[ -n "$WG_EUROPE_CONF" ]]; then
+            CONF="$WG_EUROPE_CONF"
+          elif [[ "$MODE" == *"US"* ]] && [[ -n "$WG_US_CONF" ]]; then
+            CONF="$WG_US_CONF"
+          fi
+
+          if [[ -n "$CONF" ]]; then
+            echo "$CONF" | sudo tee /etc/wireguard/wg0.conf >/dev/null
+            sudo chmod 600 /etc/wireguard/wg0.conf
+            sudo wg-quick up wg0
+            echo "WireGuard tunnel is UP!"
+          else
+            echo "::warning::Selected $MODE, but the corresponding GitHub Secret (WG_*_CONF) is not configured. Falling back to direct connection."
+          fi
+
       - name: Inspect Runner Origin
         run: |
-          echo "Detecting GitHub runner public IP and egress location..."
+          echo "Detecting runner public IP and egress location..."
           curl -s --max-time 5 https://ipinfo.io/json > runner_info.json || echo "{}" > runner_info.json
 
       - name: Test VPS 1
         run: |
-          echo "Testing VPS 1: ${{ github.event.inputs.vps1_ip || '160.250.26.86' }} on port ${{ github.event.inputs.port || '5201' }}..."
-          iperf3 -c "${{ github.event.inputs.vps1_ip || '160.250.26.86' }}" \
+          echo "Testing VPS 1: ${{ github.event.inputs.vps1_ip }} on port ${{ github.event.inputs.port || '5201' }}..."
+          iperf3 -c "${{ github.event.inputs.vps1_ip }}" \
                  -p "${{ github.event.inputs.port || '5201' }}" \
-                 -P "${{ github.event.inputs.streams || '8' }}" \
-                 -t "${{ github.event.inputs.duration || '30' }}" \
+                 -P "${{ github.event.inputs.streams }}" \
+                 -t "${{ github.event.inputs.duration }}" \
                  --connect-timeout 10000 \
                  -J > vps1_results.json 2> vps1_stderr.log || true
 
@@ -58,21 +117,22 @@ jobs:
 
       - name: Test VPS 2
         run: |
-          echo "Testing VPS 2: ${{ github.event.inputs.vps2_ip || '103.144.87.132' }} on port ${{ github.event.inputs.port || '5201' }}..."
-          iperf3 -c "${{ github.event.inputs.vps2_ip || '103.144.87.132' }}" \
+          echo "Testing VPS 2: ${{ github.event.inputs.vps2_ip }} on port ${{ github.event.inputs.port || '5201' }}..."
+          iperf3 -c "${{ github.event.inputs.vps2_ip }}" \
                  -p "${{ github.event.inputs.port || '5201' }}" \
-                 -P "${{ github.event.inputs.streams || '8' }}" \
-                 -t "${{ github.event.inputs.duration || '30' }}" \
+                 -P "${{ github.event.inputs.streams }}" \
+                 -t "${{ github.event.inputs.duration }}" \
                  --connect-timeout 10000 \
                  -J > vps2_results.json 2> vps2_stderr.log || true
 
       - name: Generate Comparison Summary
         env:
-          VPS1_IP: ${{ github.event.inputs.vps1_ip || '160.250.26.86' }}
-          VPS2_IP: ${{ github.event.inputs.vps2_ip || '103.144.87.132' }}
+          VPS1_IP: ${{ github.event.inputs.vps1_ip }}
+          VPS2_IP: ${{ github.event.inputs.vps2_ip }}
           PORT: ${{ github.event.inputs.port || '5201' }}
-          STREAMS: ${{ github.event.inputs.streams || '8' }}
-          DURATION: ${{ github.event.inputs.duration || '30' }}
+          STREAMS: ${{ github.event.inputs.streams }}
+          DURATION: ${{ github.event.inputs.duration }}
+          ROUTING_MODE: ${{ github.event.inputs.routing_mode }}
         run: python3 .github/scripts/generate_report.py
 
       - name: Upload Benchmark Artifacts
@@ -86,4 +146,5 @@ jobs:
             vps1_stderr.log
             vps2_stderr.log
             runner_info.json
+            warp_trace.txt
           if-no-files-found: ignore

@@ -17,15 +17,34 @@ def main():
         except Exception:
             pass
 
-    vps1_ip = os.environ.get("VPS1_IP") or "160.250.26.86"
-    vps2_ip = os.environ.get("VPS2_IP") or "103.144.87.132"
+    vps1_ip = os.environ.get("VPS1_IP")
+    vps2_ip = os.environ.get("VPS2_IP")
+    if not vps1_ip or not vps2_ip:
+        raise ValueError("VPS1_IP and VPS2_IP environment variables must be provided by the workflow inputs.")
+
     port = os.environ.get("PORT") or "5201"
     streams = os.environ.get("STREAMS") or "8"
     duration = os.environ.get("DURATION") or "30"
+    routing_mode = os.environ.get("ROUTING_MODE") or "Direct (GitHub Runner / Azure)"
 
-    # Inspect runner info
+    # Inspect runner origin & routing trace
     runner_origin = "GitHub Hosted Runner (Ubuntu)"
-    if os.path.exists("runner_info.json") and os.path.getsize("runner_info.json") > 0:
+    warp_active = False
+
+    if os.path.exists("warp_trace.txt") and os.path.getsize("warp_trace.txt") > 0:
+        try:
+            with open("warp_trace.txt", "r", encoding="utf-8") as f:
+                trace_dict = dict(line.strip().split("=", 1) for line in f if "=" in line)
+                if trace_dict.get("warp") == "on":
+                    warp_active = True
+                    w_ip = trace_dict.get("ip", "Unknown")
+                    w_colo = trace_dict.get("colo", "")
+                    w_loc = trace_dict.get("loc", "")
+                    runner_origin = f"`{w_ip}` (Cloudflare WARP — PoP: **{w_colo}**, Country: **{w_loc}**)"
+        except Exception:
+            pass
+
+    if not warp_active and os.path.exists("runner_info.json") and os.path.getsize("runner_info.json") > 0:
         try:
             with open("runner_info.json", "r", encoding="utf-8") as f:
                 r_data = json.load(f)
@@ -161,6 +180,7 @@ def main():
     report = f"""## 🌐 Vietnam VPS Ingress Benchmark
 
 **Client Ingress Origin (Runner):** {runner_origin}  
+**Routing Mode:** {routing_mode}  
 **Test Profile:** {streams} parallel TCP streams (`-P {streams}`), {duration}s duration (`-t {duration}`), Port {port}
 
 | Metric | VPS 1 (`{vps1_ip}`) | VPS 2 (`{vps2_ip}`) | Comparison / Difference |
