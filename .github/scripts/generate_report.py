@@ -150,7 +150,11 @@ def main():
             res["retr_str"] = "N/A"
 
         streams_data = end.get("streams", [])
-        rtts = [s.get("sender", {}).get("mean_rtt") for s in streams_data if s.get("sender", {}).get("mean_rtt") is not None]
+        rtts = [
+            (s.get("sender", {}).get("mean_rtt") if s.get("sender", {}).get("mean_rtt") is not None else s.get("receiver", {}).get("mean_rtt"))
+            for s in streams_data
+            if (s.get("sender", {}).get("mean_rtt") is not None or s.get("receiver", {}).get("mean_rtt") is not None)
+        ]
         if rtts:
             avg_rtt = (sum(rtts) / len(rtts)) / 1000.0
             res["raw_rtt_ms"] = avg_rtt
@@ -162,57 +166,179 @@ def main():
         res["status_icon"] = "✅"
         return res
 
-    v1 = parse_iperf("vps1_results.json", "vps1_stderr.log")
-    v2 = parse_iperf("vps2_results.json", "vps2_stderr.log")
-
-    # Comparison calculations
-    speed_comp = "-"
-    if v1["raw_bps"] > 0 and v2["raw_bps"] > 0:
-        ratio = v1["raw_bps"] / v2["raw_bps"]
-        if ratio >= 1.05:
-            speed_comp = f"⚡ VPS 1 is **{ratio:.1f}x faster**"
-        elif ratio <= 0.95:
-            speed_comp = f"⚡ VPS 2 is **{(1/ratio):.1f}x faster**"
-        else:
-            speed_comp = "Approximately equal (±5%)"
-
-    bytes_comp = "-"
-    if v1["raw_bytes"] > 0 and v2["raw_bytes"] > 0:
-        diff = abs(v1["raw_bytes"] - v2["raw_bytes"])
-        diff_str = f"{diff / (1024**3):.2f} GB" if diff >= 1024**3 else f"{diff / (1024**2):.2f} MB"
-        more_vps = "VPS 1" if v1["raw_bytes"] >= v2["raw_bytes"] else "VPS 2"
-        bytes_comp = f"+{diff_str} by {more_vps}"
-
-    rtt_comp = "-"
-    if v1["raw_rtt_ms"] > 0 and v2["raw_rtt_ms"] > 0:
-        rtt_diff = abs(v1["raw_rtt_ms"] - v2["raw_rtt_ms"])
-        lower_vps = "VPS 1" if v1["raw_rtt_ms"] <= v2["raw_rtt_ms"] else "VPS 2"
-        rtt_comp = f"{rtt_diff:.1f} ms lower on {lower_vps}"
-
-    retr_comp = "-"
-    if v1["status"] == "Passed" and v2["status"] == "Passed":
-        if v1["raw_bps"] > v2["raw_bps"] * 2:
-            retr_comp = "High retransmits expected for high-throughput route"
-        else:
-            retr_comp = "Normal TCP flow control"
-
+    has_bidirectional = (
+        os.path.exists("vps1_ingress.json") or os.path.exists("vps1_egress.json") or
+        os.path.exists("vps2_ingress.json") or os.path.exists("vps2_egress.json")
+    )
     is_domestic_vn = "vietnam" in routing_mode.lower() or "vietnam" in runner_origin.lower() or "vn" in runner_origin.lower()
-    if is_domestic_vn:
-        takeaway_v1 = f"**VPS 1 (`{vps1_ip}`)**: Domestic Vietnam ingress delivering **{v1['speed_str']}** with ~{v1['rtt_str']} latency over domestic peering."
-        takeaway_v2 = f"**VPS 2 (`{vps2_ip}`)**: Domestic Vietnam ingress delivering **{v2['speed_str']}** with ~{v2['rtt_str']} latency."
-        if v1['raw_bps'] > v2['raw_bps'] * 1.15:
-            takeaway_summary = f"VPS 1 provides **~{v1['raw_bps']/max(v2['raw_bps'], 1.0):.1f}x higher domestic throughput**."
-        elif v2['raw_bps'] > v1['raw_bps'] * 1.15:
-            takeaway_summary = f"VPS 2 provides **~{v2['raw_bps']/max(v1['raw_bps'], 1.0):.1f}x higher domestic throughput**."
-        else:
-            takeaway_summary = "Both VPS providers offer comparable domestic bandwidth within Vietnam."
-        takeaway_block = f"> - {takeaway_v1}\n> - {takeaway_v2}\n> - 💡 **Domestic Route Assessment:** {takeaway_summary}"
-    else:
-        takeaway_v1 = f"**VPS 1 (`{vps1_ip}`)**: Direct unthrottled international transit delivering **{v1['speed_str']}**. High packet retransmission count ({v1['retr_str']}) is normal behavior when saturating a connection over a high-latency trans-oceanic route (~{v1['rtt_str']} RTT) due to TCP window scaling."
-        takeaway_v2 = f"**VPS 2 (`{vps2_ip}`)**: International ingress is strictly **capped / throttled at ~{v2['speed_str']}**, despite physical fiber latency being comparable (~{v2['rtt_str']}). VPS 1 provides **~{v1['raw_bps']/max(v2['raw_bps'], 1.0):.1f}x higher international throughput**."
-        takeaway_block = f"> - {takeaway_v1}\n> - {takeaway_v2}"
 
-    report = f"""## 🌐 Vietnam VPS Ingress Benchmark
+    if has_bidirectional:
+        v1_in = parse_iperf("vps1_ingress.json", "vps1_ingress_stderr.log")
+        v1_out = parse_iperf("vps1_egress.json", "vps1_egress_stderr.log")
+        v2_in = parse_iperf("vps2_ingress.json", "vps2_ingress_stderr.log")
+        v2_out = parse_iperf("vps2_egress.json", "vps2_egress_stderr.log")
+
+        def compare_speeds(res1, res2, name1="VPS 1", name2="VPS 2"):
+            if res1["raw_bps"] > 0 and res2["raw_bps"] > 0:
+                ratio = res1["raw_bps"] / res2["raw_bps"]
+                if ratio >= 1.05:
+                    return f"⚡ {name1} is **{ratio:.1f}x faster**"
+                elif ratio <= 0.95:
+                    return f"⚡ {name2} is **{(1/ratio):.1f}x faster**"
+                else:
+                    return "Approximately equal (±5%)"
+            elif res1["raw_bps"] > 0:
+                return f"⚡ Only {name1} passed"
+            elif res2["raw_bps"] > 0:
+                return f"⚡ Only {name2} passed"
+            return "-"
+
+        in_speed_comp = compare_speeds(v1_in, v2_in)
+        out_speed_comp = compare_speeds(v1_out, v2_out)
+
+        def compare_bytes(res1, res2):
+            if res1["raw_bytes"] > 0 and res2["raw_bytes"] > 0:
+                diff = abs(res1["raw_bytes"] - res2["raw_bytes"])
+                diff_str = f"{diff / (1024**3):.2f} GB" if diff >= 1024**3 else f"{diff / (1024**2):.2f} MB"
+                more = "VPS 1" if res1["raw_bytes"] >= res2["raw_bytes"] else "VPS 2"
+                return f"+{diff_str} by {more}"
+            return "-"
+
+        in_bytes_comp = compare_bytes(v1_in, v2_in)
+        out_bytes_comp = compare_bytes(v1_out, v2_out)
+
+        def compare_rtt(res1, res2):
+            if res1["raw_rtt_ms"] > 0 and res2["raw_rtt_ms"] > 0:
+                diff = abs(res1["raw_rtt_ms"] - res2["raw_rtt_ms"])
+                lower = "VPS 1" if res1["raw_rtt_ms"] <= res2["raw_rtt_ms"] else "VPS 2"
+                return f"{diff:.1f} ms lower on {lower}"
+            return "-"
+
+        rtt_comp = compare_rtt(v1_in, v2_in)
+
+        def symmetry_desc(res_in, res_out, name):
+            if res_in["raw_bps"] > 0 and res_out["raw_bps"] > 0:
+                ratio = res_out["raw_bps"] / res_in["raw_bps"]
+                if ratio >= 1.3:
+                    return f"**{name}**: Egress ({res_out['speed_str']}) is **{ratio:.1f}x higher** than ingress ({res_in['speed_str']}) — favorable outbound transit routing."
+                elif ratio <= 0.7:
+                    return f"**{name}**: Ingress ({res_in['speed_str']}) is **{(1/ratio):.1f}x higher** than egress ({res_out['speed_str']}) — outbound upload constrained."
+                else:
+                    return f"**{name}**: Balanced bidirectional bandwidth (~1:1 ratio: {res_in['speed_str']} in / {res_out['speed_str']} out)."
+            return f"**{name}**: Incomplete bidirectional measurement."
+
+        v1_symm = symmetry_desc(v1_in, v1_out, "VPS 1")
+        v2_symm = symmetry_desc(v2_in, v2_out, "VPS 2")
+
+        if is_domestic_vn:
+            takeaway_in = f"**Ingress (Download to VN):** VPS 1 ({v1_in['speed_str']}) vs VPS 2 ({v2_in['speed_str']}). Local peering latency: ~{v1_in['rtt_str']}."
+            takeaway_out = f"**Egress (Upload from VN):** VPS 1 ({v1_out['speed_str']}) vs VPS 2 ({v2_out['speed_str']})."
+        else:
+            takeaway_in = f"**Ingress (Download to VN):** VPS 1 delivered **{v1_in['speed_str']}** vs VPS 2 **{v2_in['speed_str']}**."
+            takeaway_out = f"**Egress (Upload from VN):** VPS 1 pushed **{v1_out['speed_str']}** vs VPS 2 **{v2_out['speed_str']}**."
+
+        report = f"""## 🌐 Vietnam VPS Bidirectional Network Benchmark
+
+**Client Ingress/Egress Origin (Runner):** {runner_origin}  
+**Routing Mode:** {routing_mode}  
+**Test Profile:** {streams} parallel TCP streams (`-P {streams}`), {duration}s duration per test (`-t {duration}`), Port {port}
+
+### 📊 Performance Comparison Matrix
+
+| Flow Direction & Metric | VPS 1 (`{vps1_ip}`) | VPS 2 (`{vps2_ip}`) | Comparison / Analysis |
+| :--- | :--- | :--- | :--- |
+| ⬇️ **Ingress (Download to VN)** | **{v1_in['speed_str']}** | **{v2_in['speed_str']}** | {in_speed_comp} |
+| ⬆️ **Egress (Upload from VN / `-R`)** | **{v1_out['speed_str']}** | **{v2_out['speed_str']}** | {out_speed_comp} |
+| 📦 **Transferred Ingress** | {v1_in['bytes_str']} | {v2_in['bytes_str']} | {in_bytes_comp} |
+| 📦 **Transferred Egress** | {v1_out['bytes_str']} | {v2_out['bytes_str']} | {out_bytes_comp} |
+| ⏱️ **Est. Latency (Mean RTT)** | {v1_in['rtt_str']} | {v2_in['rtt_str']} | {rtt_comp} |
+| 🔁 **Retransmissions (In / Out)** | {v1_in['retr_str']} / {v1_out['retr_str']} | {v2_in['retr_str']} / {v2_out['retr_str']} | - |
+| 🚦 **Test Status (In / Out)** | {v1_in['status_icon']} / {v1_out['status_icon']} | {v2_in['status_icon']} / {v2_out['status_icon']} | - |
+
+> 📌 **Key Takeaway & Route Analysis:**
+> - {takeaway_in}
+> - {takeaway_out}
+> - **Bandwidth Symmetry:**
+>   - {v1_symm}
+>   - {v2_symm}
+> - 🧭 **Direction Reference:**
+>   - **Ingress:** Remote runner pushing traffic into the Vietnam datacenter.
+>   - **Egress (`-R`):** Vietnam VPS pushing traffic out over network transit back to the remote runner.
+
+<details>
+<summary>🔍 Raw Summary (JSON)</summary>
+
+### VPS 1 Ingress
+```json
+{json.dumps({"status": v1_in["status"], "bandwidth": v1_in["speed_str"], "bytes": v1_in["bytes_str"], "rtt": v1_in["rtt_str"], "retransmits": v1_in["retr_str"], "error": v1_in["error"]}, indent=2)}
+```
+
+### VPS 1 Egress
+```json
+{json.dumps({"status": v1_out["status"], "bandwidth": v1_out["speed_str"], "bytes": v1_out["bytes_str"], "rtt": v1_out["rtt_str"], "retransmits": v1_out["retr_str"], "error": v1_out["error"]}, indent=2)}
+```
+
+### VPS 2 Ingress
+```json
+{json.dumps({"status": v2_in["status"], "bandwidth": v2_in["speed_str"], "bytes": v2_in["bytes_str"], "rtt": v2_in["rtt_str"], "retransmits": v2_in["retr_str"], "error": v2_in["error"]}, indent=2)}
+```
+
+### VPS 2 Egress
+```json
+{json.dumps({"status": v2_out["status"], "bandwidth": v2_out["speed_str"], "bytes": v2_out["bytes_str"], "rtt": v2_out["rtt_str"], "retransmits": v2_out["retr_str"], "error": v2_out["error"]}, indent=2)}
+```
+</details>
+"""
+    else:
+        v1 = parse_iperf("vps1_results.json", "vps1_stderr.log")
+        v2 = parse_iperf("vps2_results.json", "vps2_stderr.log")
+
+        speed_comp = "-"
+        if v1["raw_bps"] > 0 and v2["raw_bps"] > 0:
+            ratio = v1["raw_bps"] / v2["raw_bps"]
+            if ratio >= 1.05:
+                speed_comp = f"⚡ VPS 1 is **{ratio:.1f}x faster**"
+            elif ratio <= 0.95:
+                speed_comp = f"⚡ VPS 2 is **{(1/ratio):.1f}x faster**"
+            else:
+                speed_comp = "Approximately equal (±5%)"
+
+        bytes_comp = "-"
+        if v1["raw_bytes"] > 0 and v2["raw_bytes"] > 0:
+            diff = abs(v1["raw_bytes"] - v2["raw_bytes"])
+            diff_str = f"{diff / (1024**3):.2f} GB" if diff >= 1024**3 else f"{diff / (1024**2):.2f} MB"
+            more_vps = "VPS 1" if v1["raw_bytes"] >= v2["raw_bytes"] else "VPS 2"
+            bytes_comp = f"+{diff_str} by {more_vps}"
+
+        rtt_comp = "-"
+        if v1["raw_rtt_ms"] > 0 and v2["raw_rtt_ms"] > 0:
+            rtt_diff = abs(v1["raw_rtt_ms"] - v2["raw_rtt_ms"])
+            lower_vps = "VPS 1" if v1["raw_rtt_ms"] <= v2["raw_rtt_ms"] else "VPS 2"
+            rtt_comp = f"{rtt_diff:.1f} ms lower on {lower_vps}"
+
+        retr_comp = "-"
+        if v1["status"] == "Passed" and v2["status"] == "Passed":
+            if v1["raw_bps"] > v2["raw_bps"] * 2:
+                retr_comp = "High retransmits expected for high-throughput route"
+            else:
+                retr_comp = "Normal TCP flow control"
+
+        if is_domestic_vn:
+            takeaway_v1 = f"**VPS 1 (`{vps1_ip}`)**: Domestic Vietnam ingress delivering **{v1['speed_str']}** with ~{v1['rtt_str']} latency over domestic peering."
+            takeaway_v2 = f"**VPS 2 (`{vps2_ip}`)**: Domestic Vietnam ingress delivering **{v2['speed_str']}** with ~{v2['rtt_str']} latency."
+            if v1['raw_bps'] > v2['raw_bps'] * 1.15:
+                takeaway_summary = f"VPS 1 provides **~{v1['raw_bps']/max(v2['raw_bps'], 1.0):.1f}x higher domestic throughput**."
+            elif v2['raw_bps'] > v1['raw_bps'] * 1.15:
+                takeaway_summary = f"VPS 2 provides **~{v2['raw_bps']/max(v1['raw_bps'], 1.0):.1f}x higher domestic throughput**."
+            else:
+                takeaway_summary = "Both VPS providers offer comparable domestic bandwidth within Vietnam."
+            takeaway_block = f"> - {takeaway_v1}\n> - {takeaway_v2}\n> - 💡 **Domestic Route Assessment:** {takeaway_summary}"
+        else:
+            takeaway_v1 = f"**VPS 1 (`{vps1_ip}`)**: Direct unthrottled international transit delivering **{v1['speed_str']}**. High packet retransmission count ({v1['retr_str']}) is normal behavior when saturating a connection over a high-latency trans-oceanic route (~{v1['rtt_str']} RTT) due to TCP window scaling."
+            takeaway_v2 = f"**VPS 2 (`{vps2_ip}`)**: International ingress is strictly **capped / throttled at ~{v2['speed_str']}**, despite physical fiber latency being comparable (~{v2['rtt_str']}). VPS 1 provides **~{v1['raw_bps']/max(v2['raw_bps'], 1.0):.1f}x higher international throughput**."
+            takeaway_block = f"> - {takeaway_v1}\n> - {takeaway_v2}"
+
+        report = f"""## 🌐 Vietnam VPS Ingress Benchmark
 
 **Client Ingress Origin (Runner):** {runner_origin}  
 **Routing Mode:** {routing_mode}  

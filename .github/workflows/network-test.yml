@@ -1,4 +1,4 @@
-name: Benchmark Dual VN VPS Ingress
+name: Benchmark Dual VN VPS Ingress & Egress
 
 on:
   workflow_dispatch:
@@ -32,7 +32,7 @@ on:
         required: true
         default: '8'
       duration:
-        description: 'Test Duration in seconds (-t)'
+        description: 'Test Duration per test in seconds (-t)'
         required: true
         default: '30'
 
@@ -129,30 +129,64 @@ jobs:
             fi
           fi
 
-      - name: Test VPS 1
+      # --- VPS 1 TESTS ---
+      - name: Test VPS 1 Ingress
         run: |
-          echo "Testing VPS 1: ${{ github.event.inputs.vps1_ip }} on port ${{ github.event.inputs.port || '5201' }}..."
+          echo "Testing VPS 1 Ingress (Runner -> VPS) on port ${{ github.event.inputs.port || '5201' }}..."
           iperf3 -c "${{ github.event.inputs.vps1_ip }}" \
                  -p "${{ github.event.inputs.port || '5201' }}" \
                  -P "${{ github.event.inputs.streams }}" \
                  -t "${{ github.event.inputs.duration }}" \
                  --connect-timeout 10000 \
-                 -J > vps1_results.json 2> vps1_stderr.log || true
+                 -J > vps1_ingress.json 2> vps1_ingress_stderr.log || true
+
+      - name: Cooldown
+        run: |
+          echo "Waiting 5s before reverse egress test..."
+          sleep 5
+
+      - name: Test VPS 1 Egress
+        run: |
+          echo "Testing VPS 1 Egress (VPS -> Runner via -R) on port ${{ github.event.inputs.port || '5201' }}..."
+          iperf3 -c "${{ github.event.inputs.vps1_ip }}" \
+                 -p "${{ github.event.inputs.port || '5201' }}" \
+                 -P "${{ github.event.inputs.streams }}" \
+                 -t "${{ github.event.inputs.duration }}" \
+                 --connect-timeout 10000 \
+                 -R \
+                 -J > vps1_egress.json 2> vps1_egress_stderr.log || true
 
       - name: Buffer Cooldown
         run: |
-          echo "Waiting 10s for TCP connections to tear down..."
+          echo "Waiting 10s for TCP connections to tear down before testing VPS 2..."
           sleep 10
 
-      - name: Test VPS 2
+      # --- VPS 2 TESTS ---
+      - name: Test VPS 2 Ingress
         run: |
-          echo "Testing VPS 2: ${{ github.event.inputs.vps2_ip }} on port ${{ github.event.inputs.port || '5201' }}..."
+          echo "Testing VPS 2 Ingress (Runner -> VPS) on port ${{ github.event.inputs.port || '5201' }}..."
           iperf3 -c "${{ github.event.inputs.vps2_ip }}" \
                  -p "${{ github.event.inputs.port || '5201' }}" \
                  -P "${{ github.event.inputs.streams }}" \
                  -t "${{ github.event.inputs.duration }}" \
                  --connect-timeout 10000 \
-                 -J > vps2_results.json 2> vps2_stderr.log || true
+                 -J > vps2_ingress.json 2> vps2_ingress_stderr.log || true
+
+      - name: Cooldown
+        run: |
+          echo "Waiting 5s before reverse egress test..."
+          sleep 5
+
+      - name: Test VPS 2 Egress
+        run: |
+          echo "Testing VPS 2 Egress (VPS -> Runner via -R) on port ${{ github.event.inputs.port || '5201' }}..."
+          iperf3 -c "${{ github.event.inputs.vps2_ip }}" \
+                 -p "${{ github.event.inputs.port || '5201' }}" \
+                 -P "${{ github.event.inputs.streams }}" \
+                 -t "${{ github.event.inputs.duration }}" \
+                 --connect-timeout 10000 \
+                 -R \
+                 -J > vps2_egress.json 2> vps2_egress_stderr.log || true
 
       - name: Generate Comparison Summary
         env:
@@ -168,12 +202,16 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: vps-ingress-benchmark-results
+          name: vps-benchmark-results
           path: |
-            vps1_results.json
-            vps2_results.json
-            vps1_stderr.log
-            vps2_stderr.log
+            vps1_ingress.json
+            vps1_egress.json
+            vps2_ingress.json
+            vps2_egress.json
+            vps1_ingress_stderr.log
+            vps1_egress_stderr.log
+            vps2_ingress_stderr.log
+            vps2_egress_stderr.log
             runner_info.json
             warp_trace.txt
             wg_status.txt
